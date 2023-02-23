@@ -22,7 +22,7 @@
 --num_images=50000
 --num_res_blocks=2
 --num_workers=4
---noparallel
+--parallel
 --sample_size=64
 --sample_step=1000
 --save_step=5000
