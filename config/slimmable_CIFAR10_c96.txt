@@ -16,13 +16,13 @@
 --nofid_use_torch
 --grad_clip=1.0
 --img_size=32
---logdir=./logs/DDPM_SLIM_CIFAR10_EPS
+--logdir=./logs/DDPM_SLIM_CIFAR10_EPS_c96
 --lr=0.0002
 --mean_type=epsilon
 --num_images=50000
 --num_res_blocks=2
 --num_workers=4
---parallel
+--noparallel
 --sample_size=64
 --sample_step=5000
 --save_step=25000
@@ -35,6 +35,5 @@
 --min_width=0.33333
 --num_sandwich_sampling=3
 --candidate_width=0.66666
---candidate_width=0.33333
 --assigned_width=1.0
 
