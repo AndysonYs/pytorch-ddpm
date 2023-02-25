@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import random
 import warnings
 from absl import app, flags
 
@@ -107,9 +108,14 @@ def train():
     datalooper = infiniteloop(dataloader)
 
     # model setup
-    net_model = UNet(
-        T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
-        num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout)
+    if FLAGS.slimmable_unet:
+        net_model = SlimmableUNet(
+            T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+            num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout)
+    else:
+        net_model = UNet(
+            T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+            num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout)
     ema_model = copy.deepcopy(net_model)
     optim = torch.optim.Adam(net_model.parameters(), lr=FLAGS.lr)
     sched = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=warmup_lr)
@@ -146,32 +152,86 @@ def train():
     # start training
     with trange(FLAGS.total_steps, dynamic_ncols=True) as pbar:
         for step in pbar:
-            # train
-            optim.zero_grad()
-            x_0 = next(datalooper).to(device)
-            loss = trainer(x_0).mean()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                net_model.parameters(), FLAGS.grad_clip)
-            optim.step()
-            sched.step()
-            ema(net_model, ema_model, FLAGS.ema_decay)
+            if FLAGS.sandwich:
+                optim.zero_grad()
+                x_0 = next(datalooper).to(device)
 
-            # log
-            writer.add_scalar('loss', loss, step)
-            pbar.set_postfix(loss='%.3f' % loss)
+                # supernet
+                trainer.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+                supernet_loss = trainer(x_0).mean()
+                supernet_loss.backward()
 
-            # sample
-            if FLAGS.sample_step > 0 and step % FLAGS.sample_step == 0:
-                net_model.eval()
-                with torch.no_grad():
-                    x_0 = ema_sampler(x_T)
-                    grid = (make_grid(x_0) + 1) / 2
-                    path = os.path.join(
-                        FLAGS.logdir, 'sample', '%d.png' % step)
-                    save_image(grid, path)
-                    writer.add_image('sample', grid, step)
-                net_model.train()
+                # minnet
+                trainer.model.apply(lambda m: setattr(m, 'width_mult', FLAGS.min_width))
+                minnet_loss = trainer(x_0).mean()
+                minnet_loss.backward()
+
+                # midnet
+                for i in range(FLAGS.num_sandwich_sampling-2):
+                    mid_width = random.choice(FLAGS.candidate_width)
+                    trainer.model.apply(lambda m: setattr(m, 'width_mult', mid_width))
+                    loss = trainer(x_0).mean()
+                    loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    net_model.parameters(), FLAGS.grad_clip)
+                optim.step()
+                sched.step()
+                ema(net_model, ema_model, FLAGS.ema_decay)
+                trainer.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+
+                # log
+                writer.add_scalar('supernet_loss', supernet_loss, step)
+                writer.add_scalar('minnet_loss', minnet_loss, step)
+                pbar.set_postfix(loss='%.3f' % loss)
+
+                # sample
+                if FLAGS.sample_step > 0 and step % FLAGS.sample_step == 0:
+                    net_model.eval()
+                    trainer.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+                    with torch.no_grad():
+                        x_0 = ema_sampler(x_T)
+                        grid = (make_grid(x_0) + 1) / 2
+                        path = os.path.join(
+                            FLAGS.logdir, 'supernet_sample', '%d.png' % step)
+                        save_image(grid, path)
+                        writer.add_image('supernet_sample', grid, step)
+
+                    trainer.model.apply(lambda m: setattr(m, 'width_mult', FLAGS.min_width))
+                    with torch.no_grad():
+                        x_0 = ema_sampler(x_T)
+                        grid = (make_grid(x_0) + 1) / 2
+                        path = os.path.join(
+                            FLAGS.logdir, 'minnet_sample', '%d.png' % step)
+                        save_image(grid, path)
+                        writer.add_image('minnet_sample', grid, step)
+                    net_model.train()
+            else:
+                # train
+                optim.zero_grad()
+                x_0 = next(datalooper).to(device)
+                loss = trainer(x_0).mean()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    net_model.parameters(), FLAGS.grad_clip)
+                optim.step()
+                sched.step()
+                ema(net_model, ema_model, FLAGS.ema_decay)
+
+                # log
+                writer.add_scalar('loss', loss, step)
+                pbar.set_postfix(loss='%.3f' % loss)
+
+                # sample
+                if FLAGS.sample_step > 0 and step % FLAGS.sample_step == 0:
+                    net_model.eval()
+                    with torch.no_grad():
+                        x_0 = ema_sampler(x_T)
+                        grid = (make_grid(x_0) + 1) / 2
+                        path = os.path.join(
+                            FLAGS.logdir, 'sample', '%d.png' % step)
+                        save_image(grid, path)
+                        writer.add_image('sample', grid, step)
+                    net_model.train()
 
             # save
             if FLAGS.save_step > 0 and step % FLAGS.save_step == 0:
