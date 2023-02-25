@@ -14,6 +14,7 @@ from tqdm import trange
 
 from diffusion import GaussianDiffusionTrainer, GaussianDiffusionSampler
 from model import UNet
+from slimmable_model import SlimmableUNet
 from score.both import get_inception_and_fid_score
 
 
@@ -52,6 +53,13 @@ flags.DEFINE_integer('eval_step', 0, help='frequency of evaluating model, 0 to d
 flags.DEFINE_integer('num_images', 50000, help='the number of generated images for evaluation')
 flags.DEFINE_bool('fid_use_torch', False, help='calculate IS and FID on gpu')
 flags.DEFINE_string('fid_cache', './stats/cifar10.train.npz', help='FID cache')
+# slimmable
+flags.DEFINE_bool('slimmable_unet', False, help='use slimmable unet')
+flags.DEFINE_bool('sandwich', False, help='use sandiwch training')
+flags.DEFINE_float('min_width', 0.25, help="min_width")
+flags.DEFINE_integer('num_sandwich_sampling', 3, help='the number of sandwich training samples')
+flags.DEFINE_multi_float('candidate_width', [0.75, 0.5], help='candidate_width')
+flags.DEFINE_float('assigned_width', 1.0, help="assigned_width")
 
 device = torch.device('cuda:0')
 
@@ -134,6 +142,10 @@ def train():
 
     # log setup
     os.makedirs(os.path.join(FLAGS.logdir, 'sample'))
+    if FLAGS.sandwich:
+        os.makedirs(os.path.join(FLAGS.logdir, 'supernet_sample'))
+        os.makedirs(os.path.join(FLAGS.logdir, 'minnet_sample'))
+
     x_T = torch.randn(FLAGS.sample_size, 3, FLAGS.img_size, FLAGS.img_size)
     x_T = x_T.to(device)
     grid = (make_grid(next(iter(dataloader))[0][:FLAGS.sample_size]) + 1) / 2
@@ -153,41 +165,62 @@ def train():
     with trange(FLAGS.total_steps, dynamic_ncols=True) as pbar:
         for step in pbar:
             if FLAGS.sandwich:
+                if FLAGS.parallel:
+                    assert isinstance(trainer.module.model, SlimmableUNet)
+                else:
+                    assert isinstance(trainer.model, SlimmableUNet)
                 optim.zero_grad()
                 x_0 = next(datalooper).to(device)
 
                 # supernet
-                trainer.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+                if FLAGS.parallel:
+                    trainer.module.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+                else:
+                    trainer.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
                 supernet_loss = trainer(x_0).mean()
                 supernet_loss.backward()
 
                 # minnet
-                trainer.model.apply(lambda m: setattr(m, 'width_mult', FLAGS.min_width))
+                if FLAGS.parallel:
+                    trainer.module.model.apply(lambda m: setattr(m, 'width_mult', FLAGS.min_width))
+                else:
+                    trainer.model.apply(lambda m: setattr(m, 'width_mult', FLAGS.min_width))
                 minnet_loss = trainer(x_0).mean()
                 minnet_loss.backward()
 
                 # midnet
                 for i in range(FLAGS.num_sandwich_sampling-2):
                     mid_width = random.choice(FLAGS.candidate_width)
-                    trainer.model.apply(lambda m: setattr(m, 'width_mult', mid_width))
+                    if FLAGS.parallel:
+                        trainer.module.model.apply(lambda m: setattr(m, 'width_mult', mid_width))
+                    else:
+                        trainer.model.apply(lambda m: setattr(m, 'width_mult', mid_width))
                     loss = trainer(x_0).mean()
                     loss.backward()
+
+                # optim
                 torch.nn.utils.clip_grad_norm_(
                     net_model.parameters(), FLAGS.grad_clip)
                 optim.step()
                 sched.step()
                 ema(net_model, ema_model, FLAGS.ema_decay)
-                trainer.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+                if FLAGS.parallel:
+                    trainer.module.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+                else:
+                    trainer.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
 
                 # log
                 writer.add_scalar('supernet_loss', supernet_loss, step)
                 writer.add_scalar('minnet_loss', minnet_loss, step)
-                pbar.set_postfix(loss='%.3f' % loss)
+                pbar.set_postfix(supernet_loss='%.3f' % supernet_loss, minnet_loss='%.3f' % minnet_loss)
 
                 # sample
                 if FLAGS.sample_step > 0 and step % FLAGS.sample_step == 0:
                     net_model.eval()
-                    trainer.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+                    if FLAGS.parallel:
+                        trainer.module.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+                    else:
+                        trainer.model.apply(lambda m: setattr(m, 'width_mult', 1.0))
                     with torch.no_grad():
                         x_0 = ema_sampler(x_T)
                         grid = (make_grid(x_0) + 1) / 2
@@ -196,7 +229,10 @@ def train():
                         save_image(grid, path)
                         writer.add_image('supernet_sample', grid, step)
 
-                    trainer.model.apply(lambda m: setattr(m, 'width_mult', FLAGS.min_width))
+                    if FLAGS.parallel:
+                        trainer.module.model.apply(lambda m: setattr(m, 'width_mult', FLAGS.min_width))
+                    else:
+                        trainer.model.apply(lambda m: setattr(m, 'width_mult', FLAGS.min_width))
                     with torch.no_grad():
                         x_0 = ema_sampler(x_T)
                         grid = (make_grid(x_0) + 1) / 2
@@ -272,9 +308,15 @@ def train():
 
 def eval():
     # model setup
-    model = UNet(
-        T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
-        num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout)
+    if FLAGS.slimmable_unet:
+        model = SlimmableUNet(
+            T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+            num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout)
+        model.apply(lambda m: setattr(m, 'width_mult', FLAGS.assigned_width))
+    else:
+        model = UNet(
+            T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+            num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout)
     sampler = GaussianDiffusionSampler(
         model, FLAGS.beta_1, FLAGS.beta_T, FLAGS.T, img_size=FLAGS.img_size,
         mean_type=FLAGS.mean_type, var_type=FLAGS.var_type).to(device)

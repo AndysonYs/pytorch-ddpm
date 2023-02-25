@@ -158,7 +158,7 @@ class ResBlock(nn.Module):
         return h
 
 
-class UNet(nn.Module):
+class SlimmableUNet(nn.Module):
     def __init__(self, T, ch, ch_mult, attn, num_res_blocks, dropout):
         super().__init__()
         assert all([i < len(ch_mult) for i in attn]), 'attn index out of bound'
@@ -236,7 +236,7 @@ class UNet(nn.Module):
 
 if __name__ == '__main__':
     batch_size = 8
-    model = UNet(
+    model = SlimmableUNet(
         T=1000, ch=128, ch_mult=[1, 2, 2, 2], attn=[1],
         num_res_blocks=2, dropout=0.1)
     x = torch.randn(batch_size, 3, 32, 32)
