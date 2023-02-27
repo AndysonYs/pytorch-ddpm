@@ -53,6 +53,7 @@ flags.DEFINE_integer('eval_step', 0, help='frequency of evaluating model, 0 to d
 flags.DEFINE_integer('num_images', 50000, help='the number of generated images for evaluation')
 flags.DEFINE_bool('fid_use_torch', False, help='calculate IS and FID on gpu')
 flags.DEFINE_string('fid_cache', './stats/cifar10.train.npz', help='FID cache')
+flags.DEFINE_string('ckpt_name', 'ckpt', help='ckpt name')
 # slimmable
 flags.DEFINE_bool('slimmable_unet', False, help='use slimmable unet')
 flags.DEFINE_bool('sandwich', False, help='use sandiwch training')
@@ -324,7 +325,7 @@ def eval():
         sampler = torch.nn.DataParallel(sampler)
 
     # load model and evaluate
-    ckpt = torch.load(os.path.join(FLAGS.logdir, 'ckpt.pt'))
+    ckpt = torch.load(os.path.join(FLAGS.logdir, '{}.pt'.format(FLAGS.ckpt_name)))
     # model.load_state_dict(ckpt['net_model'])
     # (IS, IS_std), FID, samples = evaluate(sampler, model)
     # print("Model     : IS:%6.3f(%.3f), FID:%7.3f" % (IS, IS_std, FID))
