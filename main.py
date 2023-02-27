@@ -335,6 +335,8 @@ def eval():
 
     model.load_state_dict(ckpt['ema_model'])
     (IS, IS_std), FID, samples = evaluate(sampler, model)
+    if FLAGS.slimmable_unet:
+        print('width: {}'.format(int(FLAGS.assigned_width * FLAGS.ch)))
     print("Model(EMA): IS:%6.3f(%.3f), FID:%7.3f" % (IS, IS_std, FID))
     save_image(
         torch.tensor(samples[:256]),
