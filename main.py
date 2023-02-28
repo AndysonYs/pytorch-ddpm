@@ -13,7 +13,7 @@ from torchvision import transforms
 from tqdm import trange
 
 from diffusion import GaussianDiffusionTrainer, GaussianDiffusionSampler
-from model import UNet
+from model import UNet, EnsembleUNet
 from slimmable_model import SlimmableUNet
 from score.both import get_inception_and_fid_score
 
@@ -61,6 +61,12 @@ flags.DEFINE_float('min_width', 0.25, help="min_width")
 flags.DEFINE_integer('num_sandwich_sampling', 3, help='the number of sandwich training samples')
 flags.DEFINE_multi_float('candidate_width', [0.75, 0.5], help='candidate_width')
 flags.DEFINE_float('assigned_width', 1.0, help="assigned_width")
+# ensemble
+flags.DEFINE_bool('eval_ensemble', False, help='eval ensemble model')
+flags.DEFINE_string('large_logdir', './logs/DDPM_CIFAR10_EPS', help='large model log directory')
+flags.DEFINE_string('small_logdir', './logs/DDPM_CIFAR10_EPS', help='small model log directory')
+flags.DEFINE_integer('start', 200, help='the start step of small model')
+flags.DEFINE_integer('end', 0, help='the end step of small model')
 
 device = torch.device('cuda:0')
 
@@ -345,6 +351,44 @@ def eval():
         nrow=16)
 
 
+
+def eval_ensemble():
+    # model setup
+    model = EnsembleUNet(
+        T=FLAGS.T, large_ch=FLAGS.ch, small_ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+        num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout, start=FLAGS.start, end=FLAGS.end)
+
+    sampler = GaussianDiffusionSampler(
+        model, FLAGS.beta_1, FLAGS.beta_T, FLAGS.T, img_size=FLAGS.img_size,
+        mean_type=FLAGS.mean_type, var_type=FLAGS.var_type).to(device)
+    if FLAGS.parallel:
+        sampler = torch.nn.DataParallel(sampler)
+
+    # load model and evaluate
+    large_ckpt = torch.load(os.path.join(FLAGS.large_logdir, '{}.pt'.format(FLAGS.ckpt_name)))
+    small_ckpt = torch.load(os.path.join(FLAGS.small_logdir, '{}.pt'.format(FLAGS.ckpt_name)))
+    # model.load_state_dict(ckpt['net_model'])
+    # (IS, IS_std), FID, samples = evaluate(sampler, model)
+    # print("Model     : IS:%6.3f(%.3f), FID:%7.3f" % (IS, IS_std, FID))
+    # save_image(
+    #     torch.tensor(samples[:256]),
+    #     os.path.join(FLAGS.logdir, 'samples.png'),
+    #     nrow=16)
+
+    model.large_model.load_state_dict(large_ckpt['ema_model'])
+    model.small_model.load_state_dict(small_ckpt['ema_model'])
+    (IS, IS_std), FID, samples = evaluate(sampler, model)
+    if FLAGS.slimmable_unet:
+        print('width: {}'.format(int(FLAGS.assigned_width * FLAGS.ch)))
+    print("Model(EMA): IS:%6.3f(%.3f), FID:%7.3f" % (IS, IS_std, FID))
+    save_image(
+        torch.tensor(samples[:256]),
+        os.path.join(FLAGS.logdir, 'samples_ema.png'),
+        nrow=16)
+
+
+
+
 def main(argv):
     # suppress annoying inception_v3 initialization warning
     warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -352,6 +396,8 @@ def main(argv):
         train()
     if FLAGS.eval:
         eval()
+    if FLAGS.eval_ensemble:
+        eval_ensemble()
     if not FLAGS.train and not FLAGS.eval:
         print('Add --train and/or --eval to execute corresponding tasks')
 

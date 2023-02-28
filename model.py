@@ -234,6 +234,27 @@ class UNet(nn.Module):
         return h
 
 
+class EnsembleUNet(nn.Module):
+    def __init__(self, T, large_ch, small_ch, ch_mult, attn, num_res_blocks, dropout, start, end):
+        super().__init__()
+        self.start = start
+        self.end = end
+        self.large_model = UNet(
+            T=T, ch=large_ch, ch_mult=ch_mult, attn=attn,
+            num_res_blocks=num_res_blocks, dropout=dropout)
+        self.small_model = UNet(
+            T=T, ch=small_ch, ch_mult=ch_mult, attn=attn,
+            num_res_blocks=num_res_blocks, dropout=dropout)
+
+    def forward(self, x, t):
+        timesteps = t[0]
+        if timesteps > self.end and timesteps < self.start:
+            return self.small_model(x, t)
+        else:
+            return self.large_model(x, t)
+
+
+
 if __name__ == '__main__':
     batch_size = 8
     model = UNet(
