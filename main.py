@@ -354,6 +354,7 @@ def eval():
 
 
 def eval_ensemble():
+    os.makedirs(os.path.join(FLAGS.logdir, 'sample'))
     # model setup
     model = EnsembleUNet(
         T=FLAGS.T, large_ch=FLAGS.ch, small_ch=FLAGS.small_ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
