@@ -65,6 +65,7 @@ flags.DEFINE_float('assigned_width', 1.0, help="assigned_width")
 flags.DEFINE_bool('eval_ensemble', False, help='eval ensemble model')
 flags.DEFINE_string('large_logdir', './logs/DDPM_CIFAR10_EPS', help='large model log directory')
 flags.DEFINE_string('small_logdir', './logs/DDPM_CIFAR10_EPS', help='small model log directory')
+flags.DEFINE_integer('small_ch', 64, help='channel of small model')
 flags.DEFINE_integer('start', 200, help='the start step of small model')
 flags.DEFINE_integer('end', 0, help='the end step of small model')
 
@@ -355,7 +356,7 @@ def eval():
 def eval_ensemble():
     # model setup
     model = EnsembleUNet(
-        T=FLAGS.T, large_ch=FLAGS.ch, small_ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+        T=FLAGS.T, large_ch=FLAGS.ch, small_ch=FLAGS.small_ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
         num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout, start=FLAGS.start, end=FLAGS.end)
 
     sampler = GaussianDiffusionSampler(
