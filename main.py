@@ -12,10 +12,21 @@ from torchvision.utils import make_grid, save_image
 from torchvision import transforms
 from tqdm import trange
 
+from pymoo.algorithms.moo.nsga2 import NSGA2
+from pymoo.core.problem import Problem
+from pymoo.optimize import minimize
+from pymoo.core.mutation import Mutation
+from pymoo.operators.sampling.rnd import FloatRandomSampling
+from pymoo.operators.mutation.pm import PolynomialMutation
+from pymoo.operators.crossover.pntx import SinglePointCrossover
+from ptflops import get_model_complexity_info
+import numpy as np
+
 from diffusion import GaussianDiffusionTrainer, GaussianDiffusionSampler
 from model import UNet, EnsembleUNet
-from slimmable_model import SlimmableUNet
-from score.both import get_inception_and_fid_score
+from slimmable_model import SlimmableUNet, StepAwareUNet
+from score.both import get_inception_and_fid_score, get_fid_score
+
 
 
 FLAGS = flags.FLAGS
@@ -68,6 +79,12 @@ flags.DEFINE_string('small_logdir', './logs/DDPM_CIFAR10_EPS', help='small model
 flags.DEFINE_integer('small_ch', 64, help='channel of small model')
 flags.DEFINE_integer('start', 200, help='the start step of small model')
 flags.DEFINE_integer('end', 0, help='the end step of small model')
+# search
+flags.DEFINE_bool('search', False, help='search model')
+flags.DEFINE_integer('num_generation', 1000, help='the number of generation')
+flags.DEFINE_integer('pop_size', 100, help='the size of population')
+flags.DEFINE_float('fid_weight', 0.25, help="fid_weight")
+flags.DEFINE_float('macs_weight', 0.25, help="macs_weight")
 
 device = torch.device('cuda:0')
 
@@ -91,7 +108,7 @@ def warmup_lr(step):
     return min(step, FLAGS.warmup) / FLAGS.warmup
 
 
-def evaluate(sampler, model):
+def evaluate(sampler, model, fid_only=False):
     model.eval()
     with torch.no_grad():
         images = []
@@ -103,10 +120,16 @@ def evaluate(sampler, model):
             images.append((batch_images + 1) / 2)
         images = torch.cat(images, dim=0).numpy()
     model.train()
-    (IS, IS_std), FID = get_inception_and_fid_score(
-        images, FLAGS.fid_cache, num_images=FLAGS.num_images,
-        use_torch=FLAGS.fid_use_torch, verbose=True)
-    return (IS, IS_std), FID, images
+    if fid_only:
+        FID = get_inception_and_fid_score(
+            images, FLAGS.fid_cache, num_images=FLAGS.num_images,
+            use_torch=FLAGS.fid_use_torch, verbose=True)
+        return FID
+    else:
+        (IS, IS_std), FID = get_inception_and_fid_score(
+            images, FLAGS.fid_cache, num_images=FLAGS.num_images,
+            use_torch=FLAGS.fid_use_torch, verbose=True)
+        return (IS, IS_std), FID, images
 
 
 def train():
@@ -389,7 +412,74 @@ def eval_ensemble():
         nrow=16)
 
 
+def search():
+    # model setup
+    model = StepAwareUNet(
+        T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+        num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout, strategy=None)
 
+    sampler = GaussianDiffusionSampler(
+        model, FLAGS.beta_1, FLAGS.beta_T, FLAGS.T, img_size=FLAGS.img_size,
+        mean_type=FLAGS.mean_type, var_type=FLAGS.var_type).to(device)
+    if FLAGS.parallel:
+        sampler = torch.nn.DataParallel(sampler)
+
+    # load model
+    ckpt = torch.load(os.path.join(FLAGS.logdir, '{}.pt'.format(FLAGS.ckpt_name)))
+    model.load_state_dict(ckpt['ema_model'])
+
+    # baseline FID
+    model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+    baseline_FID = evaluate(sampler, model, fid_only=True)
+    print("baseline Model(EMA): FID:%7.3f" % (baseline_FID))
+
+    # search
+    class StepAwareProblem(Problem):
+        def __init__(self, fid_weight, macs_weight):
+            super().__init__(n_var=sampler.T, n_obj=1, n_ieq_constr=1, xl=0, xu=FLAGS.candidate_width+2)
+            self.fid_weight = fid_weight
+            self.macs_weight = macs_weight
+
+        def nparray2strategy(self, x):
+            all_candidates = [1] + [FLAGS.candidate_width] + [FLAGS.min_width]
+            return [all_candidates[i] for i in x.tolist()]
+
+        def _evaluate(self, x, out, *args, **kwargs):
+            model.strategy = self.nparray2strategy(x)
+            FID = evaluate(sampler, model, fid_only=True)
+            print("Model(EMA): FID:%7.3f" % (FID))
+
+            with torch.cuda.device(0):
+                macs, params = get_model_complexity_info(model, (1, 3, FLAGS.img_size, FLAGS.img_size), as_strings=True,
+                                                         print_per_layer_stat=True, verbose=True)
+                print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+                print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+
+            out["F"] = FID * self.fid_weight + macs * self.macs_weight
+            # TODO: G?
+            out["G"] = baseline_FID - FID
+
+    class MySampling(FloatRandomSampling):
+        def _do(self, problem, n_samples, **kwargs):
+            X = super()._do(problem, n_samples, **kwargs)
+            return np.floor(X).astype(int)
+
+    problem = StepAwareProblem(fid_weight=FLAGS.fid_weight, macs_weight=FLAGS.macs_weight)
+    algorithm = NSGA2(pop_size=FLAGS.pop_size,
+                  sampling=MySampling(),
+                  crossover=SinglePointCrossover(),
+                  mutation=PolynomialMutation(),
+                  eliminate_duplicates=True)
+    results = minimize(problem,
+                       algorithm,
+                       termination=('n_gen', FLAGS.num_generation),
+                       seed=1,
+                       verbose=True,
+                       save_history=True,
+                       )
+    print(results.X)
+    with open(os.path.join(FLAGS.logdir, 'search.txt'), 'w+') as f:
+        f.write(results.X)
 
 def main(argv):
     # suppress annoying inception_v3 initialization warning
@@ -400,6 +490,8 @@ def main(argv):
         eval()
     if FLAGS.eval_ensemble:
         eval_ensemble()
+    if FLAGS.search:
+        search()
     if not FLAGS.train and not FLAGS.eval:
         print('Add --train and/or --eval to execute corresponding tasks')
 

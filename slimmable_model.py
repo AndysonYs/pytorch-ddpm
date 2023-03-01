@@ -234,6 +234,17 @@ class SlimmableUNet(nn.Module):
         return h
 
 
+class StepAwareUNet(SlimmableUNet):
+    def __init__(self, T, ch, ch_mult, attn, num_res_blocks, dropout, strategy):
+        super().__init__(T, ch, ch_mult, attn, num_res_blocks, dropout)
+        self.strategy = strategy
+
+    def forward(self, x, t):
+        width = self.strategy[t[0]]
+        self.apply(lambda m: setattr(m, 'width_mult', width))
+        return super().forward(x, t)
+
+
 if __name__ == '__main__':
     batch_size = 8
     model = SlimmableUNet(
