@@ -240,7 +240,8 @@ class StepAwareUNet(SlimmableUNet):
         self.strategy = strategy
 
     def forward(self, x, t):
-        width = self.strategy[t[0]]
+        width = self.strategy[int(t[0])]
+        # print('apply {} for t{}'.format(width, t[0]))
         self.apply(lambda m: setattr(m, 'width_mult', width))
         return super().forward(x, t)
 

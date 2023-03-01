@@ -17,10 +17,12 @@ from pymoo.core.problem import Problem
 from pymoo.optimize import minimize
 from pymoo.core.mutation import Mutation
 from pymoo.operators.sampling.rnd import FloatRandomSampling
+from pymoo.operators.sampling.rnd import IntegerRandomSampling
 from pymoo.operators.mutation.pm import PolynomialMutation
 from pymoo.operators.crossover.pntx import SinglePointCrossover
-from ptflops import get_model_complexity_info
+from profile import model_profiling
 import numpy as np
+from ptflops import get_model_complexity_info
 
 from diffusion import GaussianDiffusionTrainer, GaussianDiffusionSampler
 from model import UNet, EnsembleUNet
@@ -82,9 +84,11 @@ flags.DEFINE_integer('end', 0, help='the end step of small model')
 # search
 flags.DEFINE_bool('search', False, help='search model')
 flags.DEFINE_integer('num_generation', 1000, help='the number of generation')
-flags.DEFINE_integer('pop_size', 100, help='the size of population')
-flags.DEFINE_float('fid_weight', 0.25, help="fid_weight")
-flags.DEFINE_float('macs_weight', 0.25, help="macs_weight")
+flags.DEFINE_integer('pop_size', 10, help='the size of population')
+flags.DEFINE_float('fid_weight', 0.5, help="fid_weight")
+flags.DEFINE_float('macs_weight', 0.001, help="macs_weight")
+# profile
+flags.DEFINE_bool('profile', False, help='profile model')
 
 device = torch.device('cuda:0')
 
@@ -117,11 +121,13 @@ def evaluate(sampler, model, fid_only=False):
             batch_size = min(FLAGS.batch_size, FLAGS.num_images - i)
             x_T = torch.randn((batch_size, 3, FLAGS.img_size, FLAGS.img_size))
             batch_images = sampler(x_T.to(device)).cpu()
+            print(batch_images.shape)
             images.append((batch_images + 1) / 2)
         images = torch.cat(images, dim=0).numpy()
     model.train()
+    print(images.shape)
     if fid_only:
-        FID = get_inception_and_fid_score(
+        FID = get_fid_score(
             images, FLAGS.fid_cache, num_images=FLAGS.num_images,
             use_torch=FLAGS.fid_use_torch, verbose=True)
         return FID
@@ -430,56 +436,119 @@ def search():
 
     # baseline FID
     model.apply(lambda m: setattr(m, 'width_mult', 1.0))
+    model.strategy = [1.0 for i in range(FLAGS.T)]
+
     baseline_FID = evaluate(sampler, model, fid_only=True)
     print("baseline Model(EMA): FID:%7.3f" % (baseline_FID))
+
+    all_candidates = [1]
+    all_candidates.extend(FLAGS.candidate_width)
+    all_candidates.append(FLAGS.min_width)
+
+    def nparray2strategy(x):
+        return [all_candidates[i] for i in x.tolist()]
 
     # search
     class StepAwareProblem(Problem):
         def __init__(self, fid_weight, macs_weight):
-            super().__init__(n_var=sampler.T, n_obj=1, n_ieq_constr=1, xl=0, xu=FLAGS.candidate_width+2)
+            super().__init__(n_var=FLAGS.T, n_obj=1, n_ieq_constr=0, xl=0, xu=len(FLAGS.candidate_width)+2)
             self.fid_weight = fid_weight
             self.macs_weight = macs_weight
 
-        def nparray2strategy(self, x):
-            all_candidates = [1] + [FLAGS.candidate_width] + [FLAGS.min_width]
-            return [all_candidates[i] for i in x.tolist()]
-
         def _evaluate(self, x, out, *args, **kwargs):
-            model.strategy = self.nparray2strategy(x)
-            FID = evaluate(sampler, model, fid_only=True)
-            print("Model(EMA): FID:%7.3f" % (FID))
+            population_size, var_dim = x.shape
+            FID = np.zeros([population_size])
+            macs = np.zeros([population_size])
+            for pop in range(population_size):
+                model.strategy = nparray2strategy(x[pop])
+                print(nparray2strategy(x[pop]))
 
-            with torch.cuda.device(0):
-                macs, params = get_model_complexity_info(model, (1, 3, FLAGS.img_size, FLAGS.img_size), as_strings=True,
-                                                         print_per_layer_stat=True, verbose=True)
-                print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-                print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+                FID[pop] = evaluate(sampler, model, fid_only=True)
+                print("Model(EMA): FID:%7.3f" % (FID[pop]))
+
+                def get_macs(strategy):
+                    pre_calculate_macs = [6070, 3420, 1520, 382.5]
+                    return sum([strategy.tolist().count(i) * pre_calculate_macs[i] for i in range(int(self.xu[0]))]) / len(strategy)
+
+                macs[pop] = get_macs(x[pop])
+                print("Model Macs: {} MMac".format(macs[pop]))
 
             out["F"] = FID * self.fid_weight + macs * self.macs_weight
-            # TODO: G?
-            out["G"] = baseline_FID - FID
+            # out["G"] = baseline_FID - FID
 
     class MySampling(FloatRandomSampling):
         def _do(self, problem, n_samples, **kwargs):
-            X = super()._do(problem, n_samples, **kwargs)
+            init_num = len(FLAGS.candidate_width)+2
+            assert n_samples >= init_num
+            X_init = np.ones([init_num, problem.n_var], dtype=np.float64)
+            for i in range(len(X_init)):
+                X_init[i] = X_init[i] * i
+            X = super()._do(problem, n_samples-init_num, **kwargs)
+            X = np.concatenate([X_init, X], axis=0)
             return np.floor(X).astype(int)
+
+    class MyMutation(Mutation):
+        def __init__(self, prob=None):
+            super().__init__()
+            if prob is not None:
+                self.prob = float(prob)
+            else:
+                self.prob = None
+
+        def _do(self, problem, X, **kwargs):
+            # X: Population with several Individuals
+            # An Individual.X can be transfer to np.ndarray
+            if self.prob is None:
+                self.prob = 1.0 / problem.n_var
+
+            do_mutation = np.random.random([X.shape[0], X.shape[1]]) < self.prob
+            xl = problem.xl[None, :][0]
+            xu = problem.xu[None, :][0]
+            for idx in range(len(X)):
+                mut = do_mutation[idx]
+                X[idx] = [np.random.randint(x, y) if mut[j] else X[idx][j] for j, (x, y) in enumerate(zip(xl, xu))]
+            return X
 
     problem = StepAwareProblem(fid_weight=FLAGS.fid_weight, macs_weight=FLAGS.macs_weight)
     algorithm = NSGA2(pop_size=FLAGS.pop_size,
                   sampling=MySampling(),
                   crossover=SinglePointCrossover(),
-                  mutation=PolynomialMutation(),
+                  mutation=MyMutation(),
                   eliminate_duplicates=True)
     results = minimize(problem,
                        algorithm,
                        termination=('n_gen', FLAGS.num_generation),
                        seed=1,
-                       verbose=True,
+                       verbose=False,
                        save_history=True,
                        )
     print(results.X)
     with open(os.path.join(FLAGS.logdir, 'search.txt'), 'w+') as f:
-        f.write(results.X)
+        f.write(str(nparray2strategy(results.X)))
+
+
+def profile():
+    # model setup
+    model = UNet(
+        T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+        num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout)
+
+    def my_input_constructor(input_res):
+        try:
+            batch = torch.ones(()).new_empty((1, *input_res),
+                                             dtype=next(model.parameters()).dtype,
+                                             device=next(model.parameters()).device)
+        except StopIteration:
+            batch = torch.ones(()).new_empty((1, *input_res))
+        t = torch.ones((1), dtype=torch.long, device=next(model.parameters()).device)
+        return {'x': batch, 't': t}
+
+    with torch.cuda.device(0):
+        macs, params = get_model_complexity_info(model, (3, FLAGS.img_size, FLAGS.img_size), as_strings=True,
+                                                 input_constructor=my_input_constructor,
+                                                 print_per_layer_stat=True, verbose=True)
+        print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+        print('{:<30}  {:<8}'.format('Number of parameters: ', params))
 
 def main(argv):
     # suppress annoying inception_v3 initialization warning
@@ -492,8 +561,10 @@ def main(argv):
         eval_ensemble()
     if FLAGS.search:
         search()
-    if not FLAGS.train and not FLAGS.eval:
-        print('Add --train and/or --eval to execute corresponding tasks')
+    if FLAGS.profile:
+        profile()
+    # if not FLAGS.train and not FLAGS.eval:
+    #     print('Add --train and/or --eval to execute corresponding tasks')
 
 
 if __name__ == '__main__':
