@@ -89,6 +89,8 @@ flags.DEFINE_integer('num_generation', 1000, help='the number of generation')
 flags.DEFINE_integer('pop_size', 10, help='the size of population')
 flags.DEFINE_float('fid_weight', 0.5, help="fid_weight")
 flags.DEFINE_float('macs_weight', 0.001, help="macs_weight")
+flags.DEFINE_float('mutation_prob', 0.001, help="mutation_prob")
+flags.DEFINE_bool('random_init', False, help='search model')
 # profile
 flags.DEFINE_bool('profile', False, help='profile model')
 
@@ -521,7 +523,7 @@ def search():
     algorithm = NSGA2(pop_size=FLAGS.pop_size,
                   sampling=MySampling(),
                   crossover=SinglePointCrossover(),
-                  mutation=MyMutation(),
+                  mutation=MyMutation(prob=FLAGS.mutation_prob),
                   eliminate_duplicates=True)
     results = minimize(problem,
                        algorithm,
