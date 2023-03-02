@@ -485,11 +485,14 @@ def search():
         def _do(self, problem, n_samples, **kwargs):
             init_num = len(FLAGS.candidate_width)+2
             assert n_samples >= init_num
-            X_init = np.ones([init_num, problem.n_var], dtype=np.float64)
-            for i in range(len(X_init)):
-                X_init[i] = X_init[i] * i
-            X = super()._do(problem, n_samples-init_num, **kwargs)
-            X = np.concatenate([X_init, X], axis=0)
+            if FLAGS.random_init:
+                X = super()._do(problem, n_samples, **kwargs)
+            else:
+                X_init = np.ones([init_num, problem.n_var], dtype=np.float64)
+                for i in range(len(X_init)):
+                    X_init[i] = X_init[i] * i
+                X = super()._do(problem, n_samples-init_num, **kwargs)
+                X = np.concatenate([X_init, X], axis=0)
             return np.floor(X).astype(int)
 
     class MyMutation(Mutation):
