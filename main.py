@@ -391,7 +391,7 @@ def Eval():
 def eval_stepaware():
     # model setup
     with open(os.path.join(FLAGS.logdir, 'search.txt'), 'r') as f:
-        strategy = eval(f.readlines())
+        strategy = eval(f.readlines()[0])
     model = StepAwareUNet(
         T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
         num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout, strategy=strategy)
