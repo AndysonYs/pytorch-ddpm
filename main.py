@@ -35,6 +35,7 @@ from score.both import get_inception_and_fid_score, get_fid_score
 FLAGS = flags.FLAGS
 flags.DEFINE_bool('train', False, help='train from scratch')
 flags.DEFINE_bool('eval', False, help='load ckpt.pt and evaluate FID and IS')
+flags.DEFINE_bool('eval_stepaware', False, help='load ckpt.pt and evaluate FID and IS')
 # UNet
 flags.DEFINE_integer('ch', 128, help='base channel of UNet')
 flags.DEFINE_multi_integer('ch_mult', [1, 2, 2, 2], help='channel multiplier')
@@ -387,6 +388,37 @@ def eval():
         os.path.join(FLAGS.logdir, 'samples_ema.png'),
         nrow=16)
 
+def eval_stepaware():
+    # model setup
+    with open(os.path.join(FLAGS.logdir, 'search.txt'), 'r') as f:
+        strategy = eval(f.readlines())
+    model = StepAwareUNet(
+        T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+        num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout, strategy=strategy)
+    sampler = GaussianDiffusionSampler(
+        model, FLAGS.beta_1, FLAGS.beta_T, FLAGS.T, img_size=FLAGS.img_size,
+        mean_type=FLAGS.mean_type, var_type=FLAGS.var_type).to(device)
+    if FLAGS.parallel:
+        sampler = torch.nn.DataParallel(sampler)
+
+    # load model and evaluate
+    ckpt = torch.load(os.path.join(FLAGS.logdir, '{}.pt'.format(FLAGS.ckpt_name)))
+    # model.load_state_dict(ckpt['net_model'])
+    # (IS, IS_std), FID, samples = evaluate(sampler, model)
+    # print("Model     : IS:%6.3f(%.3f), FID:%7.3f" % (IS, IS_std, FID))
+    # save_image(
+    #     torch.tensor(samples[:256]),
+    #     os.path.join(FLAGS.logdir, 'samples.png'),
+    #     nrow=16)
+
+    model.load_state_dict(ckpt['ema_model'])
+    (IS, IS_std), FID, samples = evaluate(sampler, model)
+    print(strategy)
+    print("Model(EMA): IS:%6.3f(%.3f), FID:%7.3f" % (IS, IS_std, FID))
+    save_image(
+        torch.tensor(samples[:256]),
+        os.path.join(FLAGS.logdir, 'samples_ema.png'),
+        nrow=16)
 
 
 def eval_ensemble():
@@ -570,6 +602,8 @@ def main(argv):
         eval()
     if FLAGS.eval_ensemble:
         eval_ensemble()
+    if FLAGS.eval_stepaware:
+        eval_stepaware()
     if FLAGS.search:
         search()
     if FLAGS.profile:
