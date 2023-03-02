@@ -123,11 +123,9 @@ def evaluate(sampler, model, fid_only=False):
             batch_size = min(FLAGS.batch_size, FLAGS.num_images - i)
             x_T = torch.randn((batch_size, 3, FLAGS.img_size, FLAGS.img_size))
             batch_images = sampler(x_T.to(device)).cpu()
-            print(batch_images.shape)
             images.append((batch_images + 1) / 2)
         images = torch.cat(images, dim=0).numpy()
     model.train()
-    print(images.shape)
     if fid_only:
         FID = get_fid_score(
             images, FLAGS.fid_cache, num_images=FLAGS.num_images,
