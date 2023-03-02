@@ -27,6 +27,7 @@ from ptflops import get_model_complexity_info
 from diffusion import GaussianDiffusionTrainer, GaussianDiffusionSampler
 from model import UNet, EnsembleUNet
 from slimmable_model import SlimmableUNet, StepAwareUNet
+from slimmable_model_g16 import Slimmable16UNet, StepAware16UNet
 from score.both import get_inception_and_fid_score, get_fid_score
 
 
@@ -69,6 +70,7 @@ flags.DEFINE_string('fid_cache', './stats/cifar10.train.npz', help='FID cache')
 flags.DEFINE_string('ckpt_name', 'ckpt', help='ckpt name')
 # slimmable
 flags.DEFINE_bool('slimmable_unet', False, help='use slimmable unet')
+flags.DEFINE_bool('slimmable_g16', False, help='g16 slimmable unet')
 flags.DEFINE_bool('sandwich', False, help='use sandiwch training')
 flags.DEFINE_float('min_width', 0.25, help="min_width")
 flags.DEFINE_integer('num_sandwich_sampling', 3, help='the number of sandwich training samples')
@@ -154,9 +156,14 @@ def train():
 
     # model setup
     if FLAGS.slimmable_unet:
-        net_model = SlimmableUNet(
-            T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
-            num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout)
+        if FLAGS.slimmable_g16:
+            net_model = Slimmable16UNet(
+                T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+                num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout)
+        else:
+            net_model = SlimmableUNet(
+                T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
+                num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout)
     else:
         net_model = UNet(
             T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
