@@ -3,7 +3,7 @@
 --batch_size=128
 --beta_1=0.0001
 --beta_T=0.02
---ch=32
+--ch=48
 --ch_mult=1
 --ch_mult=2
 --ch_mult=2

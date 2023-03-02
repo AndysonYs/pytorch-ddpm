@@ -351,7 +351,7 @@ def train():
     writer.close()
 
 
-def eval():
+def Eval():
     # model setup
     if FLAGS.slimmable_unet:
         model = SlimmableUNet(
@@ -599,7 +599,7 @@ def main(argv):
     if FLAGS.train:
         train()
     if FLAGS.eval:
-        eval()
+        Eval()
     if FLAGS.eval_ensemble:
         eval_ensemble()
     if FLAGS.eval_stepaware:
