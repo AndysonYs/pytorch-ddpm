@@ -533,7 +533,8 @@ def search():
                        save_history=True,
                        )
     print(results.X)
-    with open(os.path.join(FLAGS.logdir, 'search.txt'), 'w+') as f:
+    print(nparray2strategy(results.X))
+    with open(os.path.join(FLAGS.logdir, 'search.txt'), 'a') as f:
         f.write(str(nparray2strategy(results.X)))
 
 
