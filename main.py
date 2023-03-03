@@ -566,6 +566,13 @@ def search():
                        )
     print(results.X)
     print(nparray2strategy(results.X))
+
+    def get_macs(strategy):
+        pre_calculate_macs = [6070, 3420, 1520, 382.5]
+        return sum([strategy.tolist().count(i) * pre_calculate_macs[i] for i in range(int(problem.xu[0]))]) / len(strategy)
+
+    searched_macs = get_macs(results.X)
+    print("Model Macs: {} MMac".format(searched_macs))
     with open(os.path.join(FLAGS.logdir, 'search.txt'), 'a') as f:
         f.write(str(nparray2strategy(results.X)))
 
