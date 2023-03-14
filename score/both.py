@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import torch
 import types
@@ -44,7 +46,7 @@ def get_inception_and_fid_score(images, fid_cache, num_images=None,
         images, total=num_images,
         dynamic_ncols=True, leave=False, disable=not verbose,
         desc="get_inception_and_fid_score"))
-
+    ti = time.time()
     start = 0
     while True:
         batch_images = []
@@ -71,7 +73,7 @@ def get_inception_and_fid_score(images, fid_cache, num_images=None,
                 fid_acts[start: end] = pred[0].view(-1, 2048).cpu().numpy()
                 is_probs[start: end] = pred[1].cpu().numpy()
         start = end
-
+    print(time.time() - ti)
     # Inception Score
     scores = []
     for i in range(splits):
@@ -150,6 +152,7 @@ def get_fid_score(images, fid_cache, num_images=None,
         dynamic_ncols=True, leave=False, disable=not verbose,
         desc="get_inception_and_fid_score"))
 
+    ti = time.time()
     start = 0
     while True:
         batch_images = []
@@ -176,7 +179,7 @@ def get_fid_score(images, fid_cache, num_images=None,
                 fid_acts[start: end] = pred[0].view(-1, 2048).cpu().numpy()
                 is_probs[start: end] = pred[1].cpu().numpy()
         start = end
-
+    print(time.time() - ti)
     # FID Score
     f = np.load(fid_cache)
     m2, s2 = f['mu'][:], f['sigma'][:]

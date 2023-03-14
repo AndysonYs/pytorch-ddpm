@@ -3,10 +3,8 @@
 --batch_size=128
 --beta_1=0.0001
 --beta_T=0.02
---ch=48
+--ch=32
 --ch_mult=1
---ch_mult=2
---ch_mult=2
 --ch_mult=2
 --ch_mult=4
 --dropout=0.1
@@ -16,12 +14,12 @@
 --fid_cache=./stats/cifar10.train.npz
 --nofid_use_torch
 --grad_clip=1.0
---img_size=64
+--img_size=16
 --logdir=./logs/DDPM_CIFAR10_EPS
 --lr=0.0002
 --mean_type=epsilon
 --num_images=50000
---num_res_blocks=2
+--num_res_blocks=3
 --num_workers=4
 --parallel
 --sample_size=64
